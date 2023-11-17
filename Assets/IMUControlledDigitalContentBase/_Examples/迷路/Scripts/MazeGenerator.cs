@@ -1,107 +1,183 @@
-using System.Collections;
+ï»¿using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Unity.VisualScripting;
 using UnityEngine;
 
 /// <summary>
-/// –À˜H¶¬ƒvƒƒOƒ‰ƒ€
+/// è¿·è·¯ç”Ÿæˆãƒ—ãƒ­ã‚°ãƒ©ãƒ 
 /// http://www5d.biglobe.ne.jp/~stssk/maze/make.html
 /// </summary>
 public class MazeGenerator : MonoBehaviour
 {
     /// <summary>
-    /// –À˜H‚Ì•
+    /// è¿·è·¯ã®å¹…
     /// </summary>
     public int Width  = 12;    
     /// <summary>
-    /// –À˜H‚Ì‚‚³
+    /// è¿·è·¯ã®é«˜ã•
     /// </summary>
     public int Height = 12;
+
     /// <summary>
-    /// –À˜H‚ğ•\‚í‚·2ŸŒ³”z—ñ
+    /// 
     /// </summary>
-    public int[,] Maze;
+    [SerializeField]
+    GameObject _mazeFloorRef = null;
+
+    /// <summary>
+    /// 
+    /// </summary>
+    [SerializeField]
+    Transform _mazeWallGroupRef = null;
+
+    /// <summary>
+    /// è¿·è·¯ã®å£ã®ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆã®Prefabã®å‚ç…§
+    /// </summary>
+    [SerializeField]
+    GameObject _mazeWallObjectPrefab = null;
+
+    /// <summary>
+    /// ä½œæˆã•ã‚ŒãŸè¿·è·¯ã®ãƒ–ãƒ­ãƒƒã‚¯ã®ãƒªã‚¹ãƒˆ
+    /// </summary>
+    List<GameObject> _generatedMazeWallObjectList = new List<GameObject>();
+
+    /// <summary>
+    /// è¿·è·¯ã‚’è¡¨ã‚ã™2æ¬¡å…ƒé…åˆ—
+    /// </summary>
+    int[,] _maze;
 
     void Start()
     {
-        Maze = GenerateMaze(Width, Height);    
     }
 
-    private void Update()
+    void Update()
     {
         if (Input.GetKeyUp(KeyCode.Space))
         {
-            Maze = GenerateMaze(Width, Height);
-        }
+            // è¿·è·¯ã®ãƒ–ãƒ­ãƒƒã‚¯ã‚’ä½œæˆ
+            GenerateMazeBlock();
+        }        
     }
 
-    void OnDrawGizmos()
+    /// <summary>
+    /// è¿·è·¯ã®ãƒ–ãƒ­ãƒƒã‚¯ã‚’ä½œæˆã™ã‚‹
+    /// </summary>
+    [ContextMenu("CreateMazeBlock")]
+    public void GenerateMazeBlock()
     {
-        if (Maze == null)
-            return;
-
-        for (var j = 0; j < Maze.GetLength(1); j++)
+        // è¶³å ´ã®Cubeã®ä½ç½®ã‚„ã‚µã‚¤ã‚ºã‚’å¤‰æ›´
+        if (_mazeFloorRef != null)
         {
-            for (var i = 0; i < Maze.GetLength(0); i++)
+            // ä½ç½®ã‚’å¤‰æ›´
+            _mazeFloorRef.transform.localPosition = new Vector3(0.0f, -0.5f, 0.0f);
+            // ã‚µã‚¤ã‚ºã‚’å¤‰æ›´
+            _mazeFloorRef.transform.localScale = new Vector3(Width, 1.0f, Height);
+        }
+
+        // è¿·è·¯ã®ãƒ‡ãƒ¼ã‚¿ã‚’ä½œæˆ
+        _maze = GenerateMaze(Width, Height);
+
+        // --- æ—¢ã«å­˜åœ¨ã™ã‚‹è¿·è·¯ã®å£ã®ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆã‚’å‰Šé™¤ã™ã‚‹ ---
+        for (var i = _generatedMazeWallObjectList.Count - 1; i >= 0; i--)
+        {
+            if (Application.isEditor)
+                GameObject.DestroyImmediate(_generatedMazeWallObjectList[i]);
+            else
+                GameObject.Destroy(_generatedMazeWallObjectList[i]);
+            _generatedMazeWallObjectList[i] = null;
+        }
+        _generatedMazeWallObjectList.Clear();
+        _generatedMazeWallObjectList = null;
+
+        _generatedMazeWallObjectList = new List<GameObject>();
+
+        // --- è¿·è·¯ã®å£ã®Cubeã‚’ä½œæˆ ---
+        if (_maze != null)
+        {
+            // ç”Ÿæˆã—ãŸCubeã®å€‹æ•°
+            int generatedCubeCount = 0;
+            // è¿·è·¯ãƒ‡ãƒ¼ã‚¿ã‚’ã‚¤ãƒ†ãƒ¬ãƒ¼ã‚·ãƒ§ãƒ³
+            for (int j = 0; j < _maze.GetLength(1); j++)
             {
-                var pos = new Vector3(i, 0.0f, j) - new Vector3(-Width * 0.5f, 0.0f, -Height * 0.5f);
-                Gizmos.DrawSphere(pos, Maze[i, j] < 0.5f ? 0.1f : 0.5f);
-            }            
+                for (int i = 0; i < _maze.GetLength(0); i++)
+                {
+                    if (_maze[i, j] > 0.5f)
+                    {
+                        GameObject go = (GameObject)Instantiate(_mazeWallObjectPrefab);
+                        go.name = "MazeWallObject_" + (generatedCubeCount++).ToString("000");
+                        // i, jã«ã‚ˆã‚‹ä½ç½®ã‚’ã‚»ãƒƒãƒˆ
+                        var pos = new Vector3(i, 0.0f, j);
+                        // ãƒ•ã‚£ãƒ¼ãƒ«ãƒ‰ã®å¹…ã®åŠåˆ†ãšã‚‰ã—ã¦ã€ç”Ÿæˆã•ã‚ŒãŸãƒ–ãƒ­ãƒƒã‚¯ç¾¤ãŒä¸­å¤®ã«ä½ç½®ã™ã‚‹ã‚ˆã†ã«èª¿æ•´
+                        pos += new Vector3( -0.5f * Width, 0.0f,  -0.5f * Height);
+                        // ãƒ–ãƒ­ãƒƒã‚¯1ã¤ã®åŠåˆ†ãšã‚‰ã™
+                        pos += new Vector3(0.5f, 0.25f, 0.5f);
+                        // ä½ç½®ã‚’ã‚»ãƒƒãƒˆ
+                        go.transform.localPosition = pos;
+                        // ã‚¹ã‚±ãƒ¼ãƒ«ã‚’ã‚»ãƒƒãƒˆ
+                        go.transform.localScale = new Vector3(1.0f, 0.5f, 1.0f);
+                        // å­éšå±¤ã«è¿½åŠ 
+                        go.transform.parent = _mazeWallGroupRef;
+                        // Listã«è¿½åŠ 
+                        _generatedMazeWallObjectList.Add(go);
+                    }
+                }
+            }
         }
     }
 
     /// <summary>
-    /// –À˜H‚Ìƒf[ƒ^‚ğ¶¬
+    /// è¿·è·¯ã®ãƒ‡ãƒ¼ã‚¿ã‚’ç”Ÿæˆ
     /// </summary>
-    /// <param name="width">•</param>
-    /// <param name="height">‚‚³</param>
+    /// <param name="width">å¹…</param>
+    /// <param name="height">é«˜ã•</param>
     /// <returns></returns>
     int[,] GenerateMaze(int width, int height)
     {
-        // –À˜H‚Ìƒf[ƒ^‚ğŠi”[‚·‚é‚½‚ß‚Ì”z—ñ
+        // è¿·è·¯ã®ãƒ‡ãƒ¼ã‚¿ã‚’æ ¼ç´ã™ã‚‹ãŸã‚ã®é…åˆ—
         int[,] maze = new int[width, height];
-        // ŠeƒZƒ‹‚ğ•Çi1j‚Æ‚µ‚Ä‰Šú‰»
+        // å„ã‚»ãƒ«ã‚’å£ï¼ˆ1ï¼‰ã¨ã—ã¦åˆæœŸåŒ–
         for (int x = 0; x < width; x++)
             for (int y = 0; y < height; y++)
                 maze[x, y] = 1;
 
-        // DFSƒAƒ‹ƒSƒŠƒYƒ€‚ğg—p‚µ‚½–À˜H‚Ì¶¬
-        // ’Tõ—p‚ÌƒXƒ^ƒbƒN
+        // DFSã‚¢ãƒ«ã‚´ãƒªã‚ºãƒ ã‚’ä½¿ç”¨ã—ãŸè¿·è·¯ã®ç”Ÿæˆ
+        // æ¢ç´¢ç”¨ã®ã‚¹ã‚¿ãƒƒã‚¯
         Stack<Vector2Int> stack = new Stack<Vector2Int>();
-        // ŠJn’n“_
+        // é–‹å§‹åœ°ç‚¹
         var start = new Vector2Int(1, 1);
-        // ŠJn’n“_‚ğ’Ê˜H(0)‚Éİ’è
+        // é–‹å§‹åœ°ç‚¹ã‚’é€šè·¯(0)ã«è¨­å®š
         maze[start.x, start.y] = 0;
-        // ƒXƒ^ƒbƒN‚ÉŠJn’n“_‚ğ’Ç‰Á
+        // ã‚¹ã‚¿ãƒƒã‚¯ã«é–‹å§‹åœ°ç‚¹ã‚’è¿½åŠ 
         stack.Push(start);
 
         while (stack.Count > 0)
         {
-            // Œ»İ‚ÌƒZƒ‹‚ğƒXƒ^ƒbƒN‚©‚çæ‚èo‚·
+            // ç¾åœ¨ã®ã‚»ãƒ«ã‚’ã‚¹ã‚¿ãƒƒã‚¯ã‹ã‚‰å–ã‚Šå‡ºã™
             Vector2Int current = stack.Pop();
-            // –¢–K–â‚Ì—×ÚƒZƒ‹‚ğæ“¾
+            // æœªè¨ªå•ã®éš£æ¥ã‚»ãƒ«ã‚’å–å¾—
             List<Vector2Int> neighbors = GetUnvisitedNeighbors(current, maze);
             
             if (neighbors.Count > 0)
             {
-                // Œ»İ‚ÌƒZƒ‹‚ğÄ‚ÑƒXƒ^ƒbƒN‚É’Ç‰Á
+                // ç¾åœ¨ã®ã‚»ãƒ«ã‚’å†ã³ã‚¹ã‚¿ãƒƒã‚¯ã«è¿½åŠ 
                 stack.Push(current);
-                // ƒ‰ƒ“ƒ_ƒ€‚É—×ÚƒZƒ‹‚ğæ“¾
+                // ãƒ©ãƒ³ãƒ€ãƒ ã«éš£æ¥ã‚»ãƒ«ã‚’å–å¾—
                 Vector2Int chosen = neighbors[UnityEngine.Random.Range(0, neighbors.Count)];
-                // Œ»İ‚ÌƒZƒ‹‚Æ‘I‘ğ‚³‚ê‚½—×ÚƒZƒ‹‚ÌŠÔ‚Ì•Ç‚ğæ‚èœ‚­
+                // ç¾åœ¨ã®ã‚»ãƒ«ã¨é¸æŠã•ã‚ŒãŸéš£æ¥ã‚»ãƒ«ã®é–“ã®å£ã‚’å–ã‚Šé™¤ã
                 RemoveWall(current, chosen, maze);
-                // ‘I‘ğ‚³‚ê‚½—×ÚƒZƒ‹‚ğ’Ê˜H‚Éİ’è‚·‚é
+                // é¸æŠã•ã‚ŒãŸéš£æ¥ã‚»ãƒ«ã‚’é€šè·¯ã«è¨­å®šã™ã‚‹
                 maze[chosen.x, chosen.y] = 0;
-                // ‘I‘ğ‚³‚ê‚½—×ÚƒZƒ‹‚ğƒXƒ^ƒbƒN‚É’Ç‰Á
+                // é¸æŠã•ã‚ŒãŸéš£æ¥ã‚»ãƒ«ã‚’ã‚¹ã‚¿ãƒƒã‚¯ã«è¿½åŠ 
                 stack.Push(chosen);
             }
         }
-        // ¶¬‚³‚ê‚½–À˜H‚ğ•Ô‚·
+        // ç”Ÿæˆã•ã‚ŒãŸè¿·è·¯ã‚’è¿”ã™
         return maze;
     }
 
     /// <summary>
-    /// w’è‚³‚ê‚½ƒZƒ‹‚Ì–¢–K–â‚Ì—×ÚƒZƒ‹‚ğæ“¾‚·‚éƒƒ\ƒbƒh
+    /// æŒ‡å®šã•ã‚ŒãŸã‚»ãƒ«ã®æœªè¨ªå•ã®éš£æ¥ã‚»ãƒ«ã‚’å–å¾—ã™ã‚‹ãƒ¡ã‚½ãƒƒãƒ‰
     /// </summary>
     /// <param name="cell"></param>
     /// <param name="maze"></param>
@@ -114,7 +190,7 @@ public class MazeGenerator : MonoBehaviour
             Vector2Int neighbor = cell + dir * 2;
             if (neighbor.x >= 0 && neighbor.x < Width && neighbor.y >= 0 && neighbor.y < Height && maze[neighbor.x, neighbor.y] == 1)
             {
-                // –¢–K–â‚ÌƒZƒ‹‚ğƒŠƒXƒg‚É’Ç‰Á
+                // æœªè¨ªå•ã®ã‚»ãƒ«ã‚’ãƒªã‚¹ãƒˆã«è¿½åŠ 
                 neighbors.Add(neighbor);
             }
         }
@@ -122,16 +198,16 @@ public class MazeGenerator : MonoBehaviour
     }
 
     /// <summary>
-    /// “ñ‚Â‚ÌƒZƒ‹‚ÌŠÔ‚Ì•Ç‚ğæ‚èœ‚­ƒƒ\ƒbƒh
+    /// äºŒã¤ã®ã‚»ãƒ«ã®é–“ã®å£ã‚’å–ã‚Šé™¤ããƒ¡ã‚½ãƒƒãƒ‰
     /// </summary>
     /// <param name="a"></param>
     /// <param name="b"></param>
     /// <param name="maze"></param>
     void RemoveWall(Vector2Int a, Vector2Int b, int[,] maze)
     {
-        // a ‚Æ b ‚Ì ŠÔ‚ÌƒZƒ‹‚ÌˆÊ’u‚ğŒvZ
+        // a ã¨ b ã® é–“ã®ã‚»ãƒ«ã®ä½ç½®ã‚’è¨ˆç®—
         Vector2Int wall = a + (b - a) / 2;
-        // •Ç‚ğæ‚èœ‚«A’Ê˜H‚Éİ’è
+        // å£ã‚’å–ã‚Šé™¤ãã€é€šè·¯ã«è¨­å®š
         maze[wall.x, wall.y] = 0;
     }
 }
