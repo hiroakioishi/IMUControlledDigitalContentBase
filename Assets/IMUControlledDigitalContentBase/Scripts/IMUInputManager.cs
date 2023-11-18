@@ -215,6 +215,7 @@ public class IMUInputManager : MonoBehaviour
                 {
                     try
                     {
+                        // シリアルポートで、受信したメッセージを読み込む
                         _messageText = _serialPort.ReadLine();
                     }
                     catch (System.Exception e)
@@ -226,6 +227,9 @@ public class IMUInputManager : MonoBehaviour
         });
     }
 
+    /// <summary>
+    /// 通信を閉じる
+    /// </summary>
     void Close()
     {
         if (_serialPort != null && _serialPort.IsOpen)
@@ -238,6 +242,14 @@ public class IMUInputManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 読み取った文字列を、Vector3型のacc, gyro, ahrl の値に代入する
+    /// </summary>
+    /// <param name="str"></param>
+    /// <param name="acc"></param>
+    /// <param name="gyro"></param>
+    /// <param name="ahrl"></param>
+    /// <exception cref="System.ArgumentException"></exception>
     void ConvertStringToIMU(string str, out Vector3 acc, out Vector3 gyro, out Vector3 ahrl)
     {
         // 文字列を','で分割する
