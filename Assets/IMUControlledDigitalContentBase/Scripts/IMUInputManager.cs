@@ -198,15 +198,16 @@ public class IMUInputManager : MonoBehaviour
         Debug.Log("シリアルポートは開かれました");
 
         // データの読み取りを開始
-        await ReadData();
+        await ReadDataAsync();
     }
 
     /// <summary>
-    /// 読み取る
+    /// 非同期でデータを読み取る
     /// </summary>
     /// <returns></returns>
-    async Task ReadData()
+    async Task ReadDataAsync()
     {
+        // 別スレッドで実行
         await Task.Run(() =>
         {
             while (_isRunning)
