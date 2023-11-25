@@ -63,6 +63,21 @@ public class IMUInputManager : MonoBehaviour
     /// </summary>
     public Vector3 Ahrs;
 
+    /// <summary>
+    /// ボタンAが押されているかどうか
+    /// </summary>
+    public bool ButtonA;
+
+    /// <summary>
+    /// ボタンBが押されているかどうか
+    /// </summary>
+    public bool ButtonB;
+    
+    /// <summary>
+    /// ボタンCが押されているかどうか
+    /// </summary>
+    public bool ButtonC;
+
     [Header("アプリ実行時に、自動的にシリアル通信を開始するかどうか")]
     /// <summary>
     /// アプリ実行時に、自動的にシリアル通信を開始するかどうか
@@ -143,8 +158,8 @@ public class IMUInputManager : MonoBehaviour
         if (_messageText != string.Empty)
         {
             // 受信したメッセージテキストをVector3型の加速度, 角速度, 姿勢 の値に変換する
-            ConvertStringToIMU(_messageText, out Acceleration, out Gyro, out Ahrs);
-        }
+            ConvertStringToIMU(_messageText, out Acceleration, out Gyro, out Ahrs, out ButtonA, out ButtonB, out ButtonC);
+        } 
 
         // キーボード入力モードであれば
         if (mode == InputMode.Keyboard)
@@ -251,15 +266,15 @@ public class IMUInputManager : MonoBehaviour
     /// <param name="gyro"></param>
     /// <param name="ahrl"></param>
     /// <exception cref="System.ArgumentException"></exception>
-    void ConvertStringToIMU(string str, out Vector3 acc, out Vector3 gyro, out Vector3 ahrl)
+    void ConvertStringToIMU(string str, out Vector3 acc, out Vector3 gyro, out Vector3 ahrl, out bool buttonA, out bool buttonB, out bool buttonC)
     {
         // 文字列を','で分割する
         string[] parts = str.Split(new[] { ',' }, System.StringSplitOptions.RemoveEmptyEntries);
 
-        // 分割された文字列の数が9つでない場合はエラーとして処理
-        if (parts.Length != 9)
+        // 分割された文字列の数が12つでない場合はエラーとして処理
+        if (parts.Length != 12)
         {
-            throw new System.ArgumentException("Invalid string format. Expected format: 'x,y,z,x,y,z,x,y,z'");
+            throw new System.ArgumentException("Invalid string format. Expected format: 'x,y,z,x,y,z,x,y,z,i,i,i'");
         }
 
         // 各部分文字列を浮動小数点数に変換する
@@ -272,10 +287,17 @@ public class IMUInputManager : MonoBehaviour
         float pitch = float.Parse(parts[6].Trim());
         float roll  = float.Parse(parts[7].Trim());
         float yaw   = float.Parse(parts[8].Trim());
+        int btnA = int.Parse(parts[9].Trim());
+        int btnB = int.Parse(parts[10].Trim());
+        int btnC = int.Parse(parts[11].Trim());
 
         acc  = new Vector3(accX, accY, accZ);
         gyro = new Vector3(gyroX, gyroY, gyroZ);
         ahrl = new Vector3(pitch, roll, yaw);
+
+        buttonA = btnA > 0 ? true : false;
+        buttonB = btnB > 0 ? true : false;
+        buttonC = btnC > 0 ? true : false;
     }
 
     void OnDestroy()
@@ -348,7 +370,7 @@ public class IMUInputManager : MonoBehaviour
         GUILayout.Label("<b>受信メッセージ : </b>");
         if (string.IsNullOrEmpty(_messageText))
         {
-            GUILayout.Label("accX, accY, accZ, gyroX, gyroY, gyroZ, pitch, roll, yaw");
+            GUILayout.Label("accX, accY, accZ, gyroX, gyroY, gyroZ, pitch, roll, yaw, buttonA, buttonB, buttonC");
         }
         else
         {
