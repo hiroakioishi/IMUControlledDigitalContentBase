@@ -1,165 +1,95 @@
-﻿using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
+﻿using UnityEngine;
 
+/// <summary>
+/// キーボードで、M5Stack の IMU の値の代わりを作るスクリプト
+/// （M5Stack が手元になくても、作品の動作確認ができる）
+///
+/// 【操作】
+///   ← → キー          : Pitch（Ahrs.x）を傾ける
+///   ↑ ↓ キー          : Roll（Ahrs.y）を傾ける
+///   Shift + ← → キー  : Yaw（Ahrs.z）を回す
+///   キーを離すと、傾きはゆっくり 0 に戻る
+/// </summary>
 public class IMUKeyboardEmulator : MonoBehaviour
 {
     [Header("加速度, 角速度, 姿勢(Pitch, Roll, Yaw)")]
     /// <summary>
-    /// 加速度
+    /// 加速度（傾きに合わせて -1 ～ 1 で変化する。じっとしているときの 1G は含まない）
     /// </summary>
     public Vector3 Acceleration;
 
     /// <summary>
-    /// ジャイロ
+    /// 角速度（度/秒）
     /// </summary>
     public Vector3 Gyro;
 
     /// <summary>
-    /// 姿勢航法基準装置（Attitude and Heading Reference System）
-    /// Pitch(), Roll(), Yaw()
+    /// 姿勢（度） x: Pitch, y: Roll, z: Yaw
     /// </summary>
     public Vector3 Ahrs;
 
+    [Header("設定")]
     /// <summary>
-    /// 加速度の減衰値
+    /// 矢印キーを押し続けたときの、最大の傾き（度）
     /// </summary>
-    public float AccDampingRate = 0.99f;
+    public float MaxTiltAngle = 30.0f;
 
+    /// <summary>
+    /// 傾く・戻る速さ（大きいほど素早い）
+    /// </summary>
+    public float TiltSpeed = 3.0f;
 
-    void Start()
-    {
-        
-    }
+    /// <summary>
+    /// Shift + ← → で回る速さ（度/秒）
+    /// </summary>
+    public float YawSpeed = 90.0f;
 
     void Update()
     {
-        var dt = Time.deltaTime;
-
-        var dAccX = 0.0f;
-        var dAccY = 0.0f;
-        var dAccZ = 0.0f;
-
-        var dGyroX = 0.0f;
-        var dGyroY = 0.0f;
-        var dGyroZ = 0.0f;
-
-        // --- X ---
-        if (Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.LeftShift))
+        float dt = Time.deltaTime;
+        if (dt <= 0.0f)
         {
-            dAccX  = dt;
-            dGyroX = 1.0f;
+            return;
         }
 
-        if (Input.GetKey(KeyCode.RightArrow) && !Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccX  = -dt;
-            dGyroX = -1.0f;
-        }
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
-        // --- Y ---
-        if (Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccY  = dt;
-            dGyroY = 1.0f;
-        }
+        // --- キーの状態から、目標の傾きを決める（押していないときは 0） ---
+        float targetPitch = 0.0f;
+        float targetRoll  = 0.0f;
+        float yawSpeed    = 0.0f;
 
-        if (Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.LeftShift))
+        if (!shift)
         {
-            dAccY  = -dt;
-            dGyroY = -1.0f;
-        }
-
-        // --- Z ---
-        if (Input.GetKey(KeyCode.LeftArrow) && Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccZ = dt;
-            dGyroZ = 1.0f;
-        }
-
-        if (Input.GetKey(KeyCode.RightArrow) && Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccZ = -dt;
-            dGyroZ = -1.0f;
-        }
-
-        if (Input.GetKey(KeyCode.UpArrow) && Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccZ = dt;
-            dGyroZ = 1.0f;
-        }
-
-        if (Input.GetKey(KeyCode.DownArrow) && Input.GetKey(KeyCode.LeftShift))
-        {
-            dAccZ = -dt;
-            dGyroZ = -1.0f;
-        }
-
-        // --- 加速度 ----------------------------------
-        // 加速度Xについて
-        if (dAccX != 0.0f)
-        {
-            // 加算
-            Acceleration.x += dAccX;
+            if (Input.GetKey(KeyCode.LeftArrow))  targetPitch =  MaxTiltAngle;
+            if (Input.GetKey(KeyCode.RightArrow)) targetPitch = -MaxTiltAngle;
+            if (Input.GetKey(KeyCode.UpArrow))    targetRoll  =  MaxTiltAngle;
+            if (Input.GetKey(KeyCode.DownArrow))  targetRoll  = -MaxTiltAngle;
         }
         else
         {
-            // 少しずつ値を減衰させて、0に近づける
-            Acceleration.x *= AccDampingRate;            
+            if (Input.GetKey(KeyCode.LeftArrow))  yawSpeed =  YawSpeed;
+            if (Input.GetKey(KeyCode.RightArrow)) yawSpeed = -YawSpeed;
         }
 
-        // 加速度Yについて
-        if (dAccY != 0.0f)
-        {
-            // 加算
-            Acceleration.y += dAccY;            
-        }
-        else
-        {
-            // 少しづつ値を減衰させて、0に近づける
-            Acceleration.y *= AccDampingRate;
-        }
+        // 1フレーム前の姿勢（角速度を計算するために覚えておく）
+        Vector3 previousAhrs = Ahrs;
 
-        // 加速度Zについて
-        if (dAccZ != 0.0f)
-        {
-            // 加算
-            Acceleration.z += dAccZ;
-        }
-        else
-        {
-            // 少しずつ値を減衰させて、0に近づける
-            Acceleration.z *= AccDampingRate;
-        }
+        // --- 姿勢 ---
+        // 目標の傾きに、少しずつ近づける（キーを離すと 0 に戻る）
+        // Time.deltaTime を使っているので、パソコンの速さ（フレームレート）が違っても同じ速さで動く
+        Ahrs.x = Mathf.Lerp(Ahrs.x, targetPitch, dt * TiltSpeed);
+        Ahrs.y = Mathf.Lerp(Ahrs.y, targetRoll,  dt * TiltSpeed);
+        // Yaw は、押している間だけ回り続ける（-180 ～ 180 の範囲にする）
+        Ahrs.z = Mathf.DeltaAngle(0.0f, Ahrs.z + yawSpeed * dt);
 
-        // 値が小さくなれば、0にする
-        Acceleration.x = Mathf.Abs(Acceleration.x) < 0.001f ? 0.0f : Acceleration.x;
-        Acceleration.y = Mathf.Abs(Acceleration.y) < 0.001f ? 0.0f : Acceleration.y;
-        Acceleration.z = Mathf.Abs(Acceleration.z) < 0.001f ? 0.0f : Acceleration.z;
-        // 値の範囲を -1.0f～1.0fに制限する
-        Acceleration.x = Mathf.Clamp(Acceleration.x, -1.0f, 1.0f);
-        Acceleration.y = Mathf.Clamp(Acceleration.y, -1.0f, 1.0f);
-        Acceleration.z = Mathf.Clamp(Acceleration.z, -1.0f, 1.0f);
+        // --- 角速度（1秒あたりに、どれだけ角度が変わったか） ---
+        Gyro.x = (Ahrs.x - previousAhrs.x) / dt;
+        Gyro.y = (Ahrs.y - previousAhrs.y) / dt;
+        Gyro.z = Mathf.DeltaAngle(previousAhrs.z, Ahrs.z) / dt;
 
-        // --- 角速度 ----------------------------------
-        // 角速度 値を変化させる
-        Gyro.x = Mathf.Lerp(Gyro.x, dGyroX, dt * 1.0f);
-        Gyro.y = Mathf.Lerp(Gyro.y, dGyroY, dt * 1.0f);
-        Gyro.z = Mathf.Lerp(Gyro.z, dGyroZ, dt * 1.0f);
-        // 値が小さくなれば、0にする
-        Gyro.x = Mathf.Abs(Gyro.x) < 0.00001f ? 0.0f : Gyro.x;
-        Gyro.y = Mathf.Abs(Gyro.y) < 0.00001f ? 0.0f : Gyro.y;
-        Gyro.z = Mathf.Abs(Gyro.z) < 0.00001f ? 0.0f : Gyro.z;
-
-        // --- 姿勢値 ----------------------------------
-        // 姿勢値を変化させる
-        Ahrs.x += Gyro.x;
-        Ahrs.y += Gyro.y;
-        Ahrs.z += Gyro.z;
-
-        // 姿勢 (x: Pitch, y: Roll, z: Yaw)
-        Ahrs.x = Ahrs.x % 360.0f;
-        Ahrs.y = Ahrs.y % 360.0f;
-        Ahrs.z = Ahrs.z % 360.0f;
+        // --- 加速度（傾きに合わせて -1 ～ 1） ---
+        float maxTilt = Mathf.Max(MaxTiltAngle, 1.0f);
+        Acceleration = new Vector3(Ahrs.x / maxTilt, Ahrs.y / maxTilt, 0.0f);
     }
 }

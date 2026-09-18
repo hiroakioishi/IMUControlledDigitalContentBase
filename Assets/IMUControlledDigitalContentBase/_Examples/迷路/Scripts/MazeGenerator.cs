@@ -1,7 +1,5 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
-using Unity.VisualScripting;
 using UnityEngine;
 
 namespace IMUControllerDigitalAContentBase.Example.Maze
@@ -10,7 +8,6 @@ namespace IMUControllerDigitalAContentBase.Example.Maze
     /// 迷路生成プログラム
     /// http://www5d.biglobe.ne.jp/~stssk/maze/make.html
     /// </summary>
-    [ExecuteAlways]
     public class MazeGenerator : MonoBehaviour
     {
         /// <summary>
@@ -32,6 +29,12 @@ namespace IMUControllerDigitalAContentBase.Example.Maze
         /// </summary>
         [SerializeField]
         GameObject _mazeFloorRef = null;
+
+        /// <summary>
+        /// 見えない天井（壁のすぐ上に置いて、ボールが壁を飛び越えられないようにする）
+        /// </summary>
+        [SerializeField]
+        Transform _mazeCeilingRef = null;
 
         /// <summary>
         /// 
@@ -61,6 +64,10 @@ namespace IMUControllerDigitalAContentBase.Example.Maze
         [ContextMenu("CreateMazeBlock")]
         public void GenerateMazeBlock()
         {
+            // 迷路の幅・高さは奇数でないと、外側の壁が一部できないので、偶数なら 1 増やす
+            Width = MakeOdd(Width);
+            Height = MakeOdd(Height);
+
             // 足場のCubeの位置やサイズを変更
             if (_mazeFloorRef != null)
             {
@@ -70,13 +77,22 @@ namespace IMUControllerDigitalAContentBase.Example.Maze
                 _mazeFloorRef.transform.localScale = new Vector3(Width, 1.0f, Height);
             }
 
+            // 見えない天井の位置やサイズを変更（壁のすぐ上に、迷路全体をおおうように置く）
+            if (_mazeCeilingRef != null)
+            {
+                _mazeCeilingRef.localPosition = new Vector3(0.0f, WallBlockSize.y + 0.25f, 0.0f);
+                _mazeCeilingRef.localScale = new Vector3(Width, 0.5f, Height);
+            }
+
             // 迷路のデータを作成
             _maze = GenerateMaze(Width, Height);
 
             // --- 既に存在する迷路の壁のオブジェクトを削除する --- 
             for (int i = _mazeWallGroupRef.transform.childCount - 1; i >= 0; i--)
             {
-                if (Application.isEditor)
+                // 再生していないとき（インスペクタの ContextMenu から作るとき）は DestroyImmediate、
+                // 再生中は Destroy を使う
+                if (!Application.isPlaying)
                     GameObject.DestroyImmediate(_mazeWallGroupRef.transform.GetChild(i).gameObject);
                 else
                     GameObject.Destroy(_mazeWallGroupRef.transform.GetChild(i).gameObject);
@@ -115,6 +131,24 @@ namespace IMUControllerDigitalAContentBase.Example.Maze
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// インスペクタで値を変えたときに呼ばれる（幅・高さを奇数にそろえる）
+        /// </summary>
+        void OnValidate()
+        {
+            Width = MakeOdd(Width);
+            Height = MakeOdd(Height);
+        }
+
+        /// <summary>
+        /// 奇数にする（5 より小さいときは 5 にする）
+        /// </summary>
+        static int MakeOdd(int value)
+        {
+            value = Mathf.Max(5, value);
+            return value % 2 == 0 ? value + 1 : value;
         }
 
         /// <summary>

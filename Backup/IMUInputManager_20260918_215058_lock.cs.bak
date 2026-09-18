@@ -1,0 +1,586 @@
+﻿using System;
+using System.Globalization;
+using System.IO.Ports;
+using System.Text.RegularExpressions;
+using System.Threading;
+using UnityEngine;
+
+/// <summary>
+/// M5Stack などから送られてくる IMU の値をシリアル通信で受け取る
+/// 受信フォーマット（1行）: accX,accY,accZ,gyroX,gyroY,gyroZ,pitch,roll,yaw,buttonA,buttonB,buttonC
+/// </summary>
+[RequireComponent(typeof(IMUKeyboardEmulator))]
+public class IMUInputManager : MonoBehaviour
+{
+    /// <summary>
+    /// 入力モード
+    /// </summary>
+    public enum InputMode
+    {
+        /// <summary>
+        /// シリアル
+        /// </summary>
+        Serial,
+        /// <summary>
+        /// キーボード
+        /// </summary>
+        Keyboard,
+    }
+
+    [Header("入力モード(シリアル通信 or キーボード入力)")]
+    /// <summary>
+    /// 入力モード
+    /// </summary>
+    public InputMode mode = InputMode.Serial;
+
+    /// <summary>
+    /// キーボード入力でIMUの値をエミュレートするスクリプトの参照
+    /// </summary>
+    [SerializeField]
+    IMUKeyboardEmulator _keyboardEmulator = null;
+
+    [Header("使用できるシリアルポート名のリスト")]
+    /// <summary>
+    /// 使用できるシリアルポート名のリスト
+    /// </summary>
+    [SerializeField]
+    string[] _serialPortNames = new string[0];
+
+    [Header("受信した値（加速度, 角速度, 姿勢(Pitch, Roll, Yaw)）")]
+    /// <summary>
+    /// 加速度
+    /// </summary>
+    public Vector3 Acceleration;
+
+    /// <summary>
+    /// ジャイロ
+    /// </summary>
+    public Vector3 Gyro;
+
+    /// <summary>
+    /// 姿勢方位基準システム（Attitude and Heading Reference System）
+    /// x: Pitch, y: Roll, z: Yaw
+    /// </summary>
+    public Vector3 Ahrs;
+
+    /// <summary>
+    /// ボタンAが押されているかどうか
+    /// </summary>
+    public bool ButtonA;
+
+    /// <summary>
+    /// ボタンBが押されているかどうか
+    /// </summary>
+    public bool ButtonB;
+
+    /// <summary>
+    /// ボタンCが押されているかどうか
+    /// </summary>
+    public bool ButtonC;
+
+    [Header("アプリ実行時に、自動的にシリアル通信を開始するかどうか")]
+    /// <summary>
+    /// アプリ実行時に、自動的にシリアル通信を開始するかどうか
+    /// </summary>
+    public bool AutoOpenSerial = false;
+
+    [Header("接続に使用するシリアルポート名")]
+    /// <summary>
+    /// 接続に使用するシリアルポート名
+    /// Windows で COM10 以上を指定した場合は、自動的に \\.\COM10 の形式に変換して接続します
+    /// </summary>
+    public string SerialPortName = string.Empty;
+
+    [Header("ボーレート（M5Stack側の Serial.begin() の値と合わせる）")]
+    /// <summary>
+    /// ボーレート
+    /// 9600 だと 1秒あたり 10行程度しか届かないため、115200 を推奨（M5Stack側も合わせること）
+    /// </summary>
+    public int BaudRate = 9600;
+
+    [Header("キーボード入力モード時のボタン割り当て")]
+    public KeyCode ButtonAKey = KeyCode.Z;
+    public KeyCode ButtonBKey = KeyCode.X;
+    public KeyCode ButtonCKey = KeyCode.C;
+
+    /// <summary>
+    /// シリアル通信設定ウィンドウを表示するかどうか
+    /// </summary>
+    [Header("GUIの設定")]
+    public bool ShowSettingWindow = true;
+
+    /// <summary>
+    /// 設定ウィンドウの表示/非表示を切り替えるキー
+    /// </summary>
+    public KeyCode ShowSettingWindowKey = KeyCode.Alpha0;
+
+    /// <summary>
+    /// シリアルポートが開いているかどうか
+    /// </summary>
+    public bool IsOpen => _serialPort != null && _serialPort.IsOpen;
+
+    /// <summary>
+    /// シリアル通信を行うためのポート
+    /// </summary>
+    SerialPort _serialPort;
+
+    /// <summary>
+    /// 受信用スレッド
+    /// </summary>
+    Thread _readThread;
+
+    /// <summary>
+    /// 受信スレッドが動作しているかどうか（メインスレッドと受信スレッドの両方から参照）
+    /// </summary>
+    volatile bool _isRunning = false;
+
+    /// <summary>
+    /// 受信スレッドとメインスレッドで受け渡しする値の排他用
+    /// </summary>
+    readonly object _lock = new object();
+
+    /// <summary>
+    /// 受信スレッドが最後に受信した1行（_lock で保護）
+    /// </summary>
+    string _latestLine = string.Empty;
+
+    /// <summary>
+    /// まだ処理していない新しい行があるかどうか（_lock で保護）
+    /// </summary>
+    bool _hasNewLine = false;
+
+    /// <summary>
+    /// 受信したメッセージテキスト（表示用、メインスレッドのみで使用）
+    /// </summary>
+    string _messageText = string.Empty;
+
+    /// <summary>
+    /// フォーマット不正で読み捨てた行数
+    /// </summary>
+    int _invalidLineCount = 0;
+
+    /// <summary>
+    /// ポート選択リストスクロールの値
+    /// </summary>
+    Vector2 _scroll;
+
+    /// <summary>
+    /// 選択されたポート
+    /// </summary>
+    int _selected;
+
+    /// <summary>
+    /// シリアルポート設定ウィンドウの位置、サイズ
+    /// </summary>
+    Rect windowRect = new Rect(16, 16, 512, 512);
+
+    void Awake()
+    {
+        if (_keyboardEmulator == null)
+        {
+            _keyboardEmulator = GetComponent<IMUKeyboardEmulator>();
+        }
+    }
+
+    void Start()
+    {
+        // 使用できるシリアルポート名のリストを取得
+        RefreshPortNames();
+
+        // アプリ起動時に、自動でシリアル通信を開始する場合
+        if (AutoOpenSerial)
+        {
+            Open();
+        }
+    }
+
+    void Update()
+    {
+        // キーを押して離したら、設定ウィンドウの表示を切り替える
+        if (Input.GetKeyUp(ShowSettingWindowKey))
+        {
+            ShowSettingWindow = !ShowSettingWindow;
+        }
+
+        // 受信スレッドから、新しく届いた行を取り出す
+        string line = null;
+        lock (_lock)
+        {
+            if (_hasNewLine)
+            {
+                line = _latestLine;
+                _hasNewLine = false;
+            }
+        }
+
+        if (line != null)
+        {
+            _messageText = line;
+
+            // シリアル入力モードのときだけ値に反映する
+            if (mode == InputMode.Serial)
+            {
+                if (TryParseIMU(line, out var acc, out var gyro, out var ahrs, out var a, out var b, out var c))
+                {
+                    Acceleration = acc;
+                    Gyro         = gyro;
+                    Ahrs         = ahrs;
+                    ButtonA      = a;
+                    ButtonB      = b;
+                    ButtonC      = c;
+                }
+                else
+                {
+                    // 接続直後の途中から読んだ行などは読み捨てる
+                    _invalidLineCount++;
+                }
+            }
+        }
+
+        // 受信スレッドがエラー（ケーブル抜けなど）で止まっていたら、ポートを閉じる
+        if (_serialPort != null && !_isRunning)
+        {
+            Close();
+        }
+
+        // キーボード入力モードであれば
+        if (mode == InputMode.Keyboard && _keyboardEmulator != null)
+        {
+            Acceleration = _keyboardEmulator.Acceleration;
+            Gyro         = _keyboardEmulator.Gyro;
+            Ahrs         = _keyboardEmulator.Ahrs;
+            ButtonA      = Input.GetKey(ButtonAKey);
+            ButtonB      = Input.GetKey(ButtonBKey);
+            ButtonC      = Input.GetKey(ButtonCKey);
+        }
+    }
+
+    /// <summary>
+    /// 使用できるシリアルポート名のリストを更新する
+    /// </summary>
+    public void RefreshPortNames()
+    {
+        try
+        {
+            _serialPortNames = SerialPort.GetPortNames();
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("シリアルポート一覧を取得できませんでした: " + e.Message);
+            _serialPortNames = new string[0];
+        }
+        Array.Sort(_serialPortNames);
+
+        if (_selected >= _serialPortNames.Length)
+        {
+            _selected = 0;
+        }
+    }
+
+    /// <summary>
+    /// シリアルポートを開く
+    /// </summary>
+    /// <returns>開けたかどうか</returns>
+    public bool Open()
+    {
+        // すでに開いていたら何もしない
+        if (IsOpen)
+            return true;
+
+        // 前回の後始末（開けずに残ったポートなど）
+        Close();
+
+        // 使用するポート名を決める
+        string portName = null;
+        if (AutoOpenSerial)
+        {
+            portName = SerialPortName;
+        }
+        else if (_serialPortNames != null && _selected >= 0 && _selected < _serialPortNames.Length)
+        {
+            portName = _serialPortNames[_selected];
+        }
+
+        if (string.IsNullOrWhiteSpace(portName))
+        {
+            Debug.LogWarning("シリアルポート名が指定されていません");
+            return false;
+        }
+
+        try
+        {
+            _serialPort = new SerialPort(NormalizePortName(portName), BaudRate, Parity.None, 8, StopBits.One);
+            // 読み取りのタイムアウト時間（データが来ないときに受信スレッドが止まり続けないように）
+            _serialPort.ReadTimeout = 500;
+            _serialPort.NewLine = "\n";
+            _serialPort.Open();
+            // 開く前に溜まっていた古いデータを捨てる
+            _serialPort.DiscardInBuffer();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"シリアルポート {portName} を開けませんでした: {e.Message}");
+            _serialPort?.Dispose();
+            _serialPort = null;
+            return false;
+        }
+
+        _invalidLineCount = 0;
+        lock (_lock)
+        {
+            _latestLine = string.Empty;
+            _hasNewLine = false;
+        }
+
+        // 受信スレッドを開始
+        _isRunning = true;
+        _readThread = new Thread(ReadLoop)
+        {
+            IsBackground = true,
+            Name = "IMUSerialRead",
+        };
+        _readThread.Start(_serialPort);
+
+        Debug.Log($"シリアルポート {portName} を開きました ({BaudRate}bps)");
+        return true;
+    }
+
+    /// <summary>
+    /// 受信スレッドの処理
+    /// </summary>
+    void ReadLoop(object arg)
+    {
+        // 参照をローカルに保持（メインスレッドで _serialPort が null にされても大丈夫なように）
+        var port = (SerialPort)arg;
+
+        while (_isRunning)
+        {
+            try
+            {
+                // 1行受信する（ReadTimeout の間データが来なければ TimeoutException）
+                string line = port.ReadLine();
+                lock (_lock)
+                {
+                    _latestLine = line;
+                    _hasNewLine = true;
+                }
+            }
+            catch (TimeoutException)
+            {
+                // データ待ちなので正常。何もしない
+            }
+            catch (Exception e)
+            {
+                // ケーブルが抜けた等。Close() 中の例外はログに出さない
+                if (_isRunning)
+                {
+                    Debug.LogWarning("シリアル受信でエラーが発生したため、受信を停止します: " + e.Message);
+                }
+                _isRunning = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 通信を閉じる
+    /// </summary>
+    public void Close()
+    {
+        // 先にフラグを下ろして、受信スレッドを止める
+        _isRunning = false;
+
+        if (_readThread != null)
+        {
+            if (_readThread.IsAlive && Thread.CurrentThread != _readThread)
+            {
+                // ReadTimeout(500ms) 以内に抜けるはず
+                _readThread.Join(1000);
+            }
+            _readThread = null;
+        }
+
+        if (_serialPort != null)
+        {
+            try
+            {
+                if (_serialPort.IsOpen)
+                {
+                    _serialPort.Close();
+                }
+                _serialPort.Dispose();
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("シリアルポートを閉じる際にエラーが発生しました: " + e.Message);
+            }
+            _serialPort = null;
+
+            // 押しっぱなしのまま残らないように
+            ButtonA = ButtonB = ButtonC = false;
+
+            Debug.Log("シリアルポートを閉じました");
+        }
+    }
+
+    /// <summary>
+    /// Windows で COM10 以上のポート名を \\.\COM10 の形式に変換する
+    /// </summary>
+    static string NormalizePortName(string name)
+    {
+        name = name.Trim();
+        bool isWindows = Application.platform == RuntimePlatform.WindowsEditor
+                      || Application.platform == RuntimePlatform.WindowsPlayer;
+        if (isWindows && Regex.IsMatch(name, @"^COM\d{2,}$", RegexOptions.IgnoreCase))
+        {
+            return @"\\.\" + name;
+        }
+        return name;
+    }
+
+    /// <summary>
+    /// 受信した文字列を、加速度, 角速度, 姿勢, ボタン の値に変換する
+    /// </summary>
+    /// <returns>変換できたかどうか（フォーマット不正の場合は false）</returns>
+    static bool TryParseIMU(string str, out Vector3 acc, out Vector3 gyro, out Vector3 ahrs, out bool buttonA, out bool buttonB, out bool buttonC)
+    {
+        acc = gyro = ahrs = Vector3.zero;
+        buttonA = buttonB = buttonC = false;
+
+        if (string.IsNullOrEmpty(str))
+            return false;
+
+        // 文字列を','で分割する
+        string[] parts = str.Split(',');
+
+        // 分割された文字列の数が12でない場合は不正
+        if (parts.Length != 12)
+            return false;
+
+        // 各部分文字列を数値に変換する（PCの地域設定に影響されないよう InvariantCulture を使用）
+        var v = new float[12];
+        for (int i = 0; i < 12; i++)
+        {
+            if (!float.TryParse(parts[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out v[i]))
+                return false;
+        }
+
+        acc  = new Vector3(v[0], v[1], v[2]);
+        gyro = new Vector3(v[3], v[4], v[5]);
+        ahrs = new Vector3(v[6], v[7], v[8]);   // Pitch, Roll, Yaw
+
+        buttonA = v[9]  > 0.5f;
+        buttonB = v[10] > 0.5f;
+        buttonC = v[11] > 0.5f;
+        return true;
+    }
+
+    void OnDisable()
+    {
+        // コンポーネント無効化・シーン切り替え・再生停止時にも確実に閉じる
+        Close();
+    }
+
+    void OnApplicationQuit()
+    {
+        Close();
+    }
+
+    void OnDestroy()
+    {
+        Close();
+    }
+
+    void OnGUI()
+    {
+        // シリアルポート設定ウィンドウを表示するかどうか
+        if (ShowSettingWindow)
+        {
+            windowRect = GUILayout.Window(0, windowRect, DoWindow, "シリアルポート設定");
+        }
+    }
+
+    /// <summary>
+    /// シリアル通信設定ウィンドウの実行
+    /// </summary>
+    void DoWindow(int windowID)
+    {
+        GUILayout.Label("<b>アプリ起動時に自動的に接続する</b>");
+        AutoOpenSerial = GUILayout.Toggle(AutoOpenSerial, "有効 / 無効 ※無効の場合は、有効なポート名を選択しOpenを押します。");
+
+        if (AutoOpenSerial)
+        {
+            GUILayout.Label("<b>接続に使用するシリアルポート名</b>");
+            SerialPortName = GUILayout.TextField(SerialPortName);
+        }
+        else
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("<b>ポート名のリスト : </b>");
+            if (GUILayout.Button("Refresh", GUILayout.Width(80)))
+            {
+                RefreshPortNames();
+            }
+            GUILayout.EndHorizontal();
+
+            if (_serialPortNames != null && _serialPortNames.Length > 0)
+            {
+                _scroll = GUILayout.BeginScrollView(_scroll, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(false));
+                _selected = GUILayout.SelectionGrid(_selected, _serialPortNames, 1);
+                GUILayout.EndScrollView();
+
+                GUILayout.Label("<b>選択されたポート名 : </b>");
+                GUILayout.Label(_serialPortNames[_selected]);
+            }
+            else
+            {
+                GUILayout.Label("<color=Orange>シリアルポートが見つかりません。M5Stackを接続して Refresh を押してください。</color>");
+            }
+        }
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("<b>ボーレート : </b>", GUILayout.Width(100));
+        if (int.TryParse(GUILayout.TextField(BaudRate.ToString()), out int baud) && baud > 0)
+        {
+            BaudRate = baud;
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.Label("<b>シリアルポートを開く, または, 閉じる : </b>");
+        if (GUILayout.Button("Open"))
+        {
+            Open();
+        }
+        if (GUILayout.Button("Close"))
+        {
+            Close();
+        }
+
+        GUILayout.Space(24);
+        GUILayout.Label("<b>▼シリアル通信ステータス</b>");
+
+        GUILayout.Label("<b>シリアルポートが開いているかどうか: </b>");
+        if (_serialPort != null)
+        {
+            GUILayout.Label(_serialPort.IsOpen ? "<color=Lime>True</color>" : "<color=Red>False</color>");
+        }
+        else
+        {
+            GUILayout.Label("---");
+        }
+
+        GUILayout.Label("<b>受信メッセージ : </b>");
+        if (string.IsNullOrEmpty(_messageText))
+        {
+            GUILayout.Label("accX, accY, accZ, gyroX, gyroY, gyroZ, pitch, roll, yaw, buttonA, buttonB, buttonC");
+        }
+        else
+        {
+            GUILayout.Label(_messageText);
+        }
+
+        GUILayout.Label("<b>読み捨てた不正な行の数 : </b>" + _invalidLineCount);
+
+        // ウィンドウをドラッグで移動できるようにする
+        GUI.DragWindow();
+    }
+}

@@ -1,0 +1,525 @@
+﻿using UnityEngine;
+
+namespace IMUControllerDigitalAContentBase.Example.SnowGlobe
+{
+    /// <summary>
+    /// スノードーム
+    ///
+    /// 【しくみ】
+    ///   M5Stack の加速度センサーは、じっとしているとき「重力と反対向き（上向き）」に 1G の値を出します。
+    ///   この値から「M5Stack がどれだけ傾いているか」と「どれだけ振られたか」を取り出して、
+    ///   画面の中のドームの向きと、Unity の重力（Physics.gravity）に反映します。
+    ///   雪の動きは、Unity の物理エンジンにおまかせです。
+    ///
+    /// 【2つの見え方】（インスペクタの RotateGlobe で切り替え）
+    ///   ・RotateGlobe オン  … ドームが M5Stack と一緒に傾く。重力はいつも真下。
+    ///                         （部屋に置いたカメラで、手に持ったスノードームを見ている）
+    ///   ・RotateGlobe オフ  … ドームは動かず、重力の向きが変わる。
+    ///                         （スノードームにカメラを貼り付けて、一緒に傾けながら見ている）
+    ///   どちらも物理的には同じ現象で、「どこから見ているか」だけが違います。
+    ///
+    /// 【ボタン】
+    ///   A : 雪を舞い上げる
+    ///   B : 雪の色を変える
+    /// </summary>
+    [RequireComponent(typeof(Rigidbody))]
+    public class SnowGlobeController : MonoBehaviour
+    {
+        /// <summary>
+        /// M5Stack の持ち方
+        /// </summary>
+        public enum HoldStyle
+        {
+            /// <summary>
+            /// 立てて持つ（画面を自分に向ける）
+            /// </summary>
+            Upright,
+            /// <summary>
+            /// 平らに持つ（画面を上に向ける）
+            /// </summary>
+            Flat,
+        }
+
+        // ==================================================================
+        //  インスペクタで設定する項目
+        // ==================================================================
+
+        [Header("スクリプトの参照")]
+        [SerializeField]
+        IMUInputManager _imuInputManager = null;
+
+        [Header("M5Stackの持ち方")]
+        public HoldStyle holdStyle = HoldStyle.Upright;
+
+        [Header("見え方（オン: ドームが傾く / オフ: 重力の向きが変わる）")]
+        public bool RotateGlobe = true;
+
+        [Header("雪が思った方向に動かないときは、チェックを入れて向きを反転する")]
+        public bool InvertX = false;
+        public bool InvertY = false;
+        public bool InvertZ = false;
+
+        [Header("雪")]
+        /// <summary>
+        /// 雪1粒の Prefab（Rigidbody が付いた小さな球）
+        /// </summary>
+        [SerializeField]
+        GameObject _snowPrefab = null;
+
+        /// <summary>
+        /// 作った雪をまとめておく親オブジェクト
+        /// ※ ドームの子にはしないこと（ドームを回したとき、雪が一緒に瞬間移動してしまう）
+        /// </summary>
+        [SerializeField]
+        Transform _snowParent = null;
+
+        /// <summary>
+        /// 雪の数
+        /// </summary>
+        public int SnowCount = 400;
+
+        /// <summary>
+        /// 空気の抵抗。大きいほど、雪がゆっくり落ちる
+        /// </summary>
+        public float SnowDamping = 10.0f;
+
+        /// <summary>
+        /// 雪の色（ボタンBで順番に切り替わる）
+        /// </summary>
+        public Color[] SnowColors = new Color[]
+        {
+            new Color(1.0f, 1.0f, 1.0f),   // 白
+            new Color(1.0f, 0.7f, 0.8f),   // 桜色
+            new Color(1.0f, 0.8f, 0.3f),   // 金色
+            new Color(0.5f, 0.8f, 1.0f),   // 水色
+        };
+
+        /// <summary>
+        /// 雪の光り具合
+        /// </summary>
+        public float SnowGlow = 0.5f;
+
+        [Header("ドーム（ガラス玉）")]
+        /// <summary>
+        /// ガラス玉の半径（雪はこの中から出られない）
+        /// </summary>
+        public float GlobeRadius = 1.0f;
+
+        /// <summary>
+        /// 地面の高さ（ガラス玉の中心からの高さ。雪はこれより下に行けない）
+        /// </summary>
+        public float GroundHeight = -0.52f;
+
+        [Header("重力")]
+        /// <summary>
+        /// 重力の強さ（1 で地球と同じ）
+        /// </summary>
+        public float GravityScale = 1.0f;
+
+        /// <summary>
+        /// 振ったときの動きを、何倍に大げさにするか
+        /// </summary>
+        public float ShakeStrength = 3.0f;
+
+        /// <summary>
+        /// 傾きを取り出すときのなめらかさ（大きいほど、ドームの傾きが M5Stack に素早くついてくる）
+        /// </summary>
+        public float TiltSmoothness = 3.0f;
+
+        /// <summary>
+        /// ボタンAで雪を舞い上げる強さ
+        /// </summary>
+        public float BlowUpPower = 10.0f;
+
+        // ==================================================================
+        //  スクリプトの中だけで使う変数
+        // ==================================================================
+
+        /// <summary>
+        /// ドーム自身の Rigidbody
+        /// ドームを Rigidbody を通して動かすと、動く地面や雪だるまに、雪が正しく押される
+        /// </summary>
+        Rigidbody _globeBody;
+
+        /// <summary>
+        /// ドームの向き（Update で計算して、FixedUpdate で反映する）
+        /// </summary>
+        Quaternion _globeRotation = Quaternion.identity;
+
+        /// <summary>
+        /// 作った雪（の Rigidbody）の一覧
+        /// </summary>
+        Rigidbody[] _snowFlakes;
+
+        /// <summary>
+        /// 雪1粒の半径
+        /// </summary>
+        float _snowRadius;
+
+        /// <summary>
+        /// すべての雪で共有するマテリアル（色を変えるときは、これ1つを変えればよい）
+        /// </summary>
+        Material _snowMaterial;
+
+        /// <summary>
+        /// 今の雪の色の番号
+        /// </summary>
+        int _colorIndex = 0;
+
+        /// <summary>
+        /// 加速度のうち、ゆっくり変化する部分（＝ M5Stack から見た「上」の向き ＝ 傾き）
+        /// </summary>
+        Vector3 _tilt = Vector3.up;
+
+        /// <summary>
+        /// もともとの重力（終了するときに元に戻すため）
+        /// </summary>
+        Vector3 _originalGravity;
+
+        /// <summary>
+        /// 前のフレームでボタンが押されていたかどうか（押した瞬間を見つけるため）
+        /// </summary>
+        bool _prevButtonA = false;
+        bool _prevButtonB = false;
+
+        // ==================================================================
+        //  Unity から呼ばれる関数
+        // ==================================================================
+
+        void Awake()
+        {
+            // もともとの重力を覚えておく
+            _originalGravity = Physics.gravity;
+
+            // ドームは、物理で勝手に動くのではなく、スクリプトで動かす（Is Kinematic）
+            _globeBody = GetComponent<Rigidbody>();
+            _globeBody.isKinematic = true;
+            _globeBody.useGravity = false;
+            _globeBody.interpolation = RigidbodyInterpolation.Interpolate;
+        }
+
+        void Start()
+        {
+            CreateSnow();
+        }
+
+        void Update()
+        {
+            if (_imuInputManager == null)
+            {
+                return;
+            }
+
+            // --- 1. M5Stack の加速度を、Unity の向きに合わせて取り出す ---
+            Vector3 acc = GetAcceleration();
+
+            // --- 2. 傾き（ゆっくり変化する部分）を取り出す ---
+            // 今の値を、少しずつ追いかけることで、急な変化（揺れ）を取り除く
+            _tilt = Vector3.Lerp(_tilt, acc, Time.deltaTime * TiltSmoothness);
+
+            // --- 3. 揺れ（急に変化する部分）を取り出す ---
+            // 今の値 - 傾き = 振ったことで生まれた、急な変化
+            Vector3 shake = acc - _tilt;
+
+            // --- 4. ドームの中から見た重力を計算する ---
+            // センサーの値は「上向き」なので、マイナスを付けて「下向き」にする
+            // 揺れの部分は ShakeStrength 倍して、大げさにする
+            Vector3 gravityInGlobe = -(_tilt + shake * ShakeStrength) * 9.81f * GravityScale;
+
+            // --- 5. 見え方に合わせて、ドームの向きと重力を決める ---
+            if (RotateGlobe)
+            {
+                // M5Stack から見た「上」（_tilt）が、画面の中の「上」に来るように、ドームを回す
+                _globeRotation = Quaternion.FromToRotation(_tilt, Vector3.up);
+
+                // ドームの中から見た重力を、ドームと同じだけ回して、画面の中の重力にする
+                // （傾きの分は打ち消されて、重力はいつも真下になる。振った揺れだけが残る）
+                Physics.gravity = _globeRotation * gravityInGlobe;
+            }
+            else
+            {
+                // ドームは動かさず、重力の向きを変える
+                _globeRotation = Quaternion.identity;
+                Physics.gravity = gravityInGlobe;
+            }
+
+            // --- ボタン（押した瞬間だけ反応させる） ---
+            bool buttonA = _imuInputManager.ButtonA;
+            bool buttonB = _imuInputManager.ButtonB;
+
+            if (buttonA && !_prevButtonA)
+            {
+                BlowUpSnow();
+            }
+            if (buttonB && !_prevButtonB)
+            {
+                ChangeSnowColor();
+            }
+
+            _prevButtonA = buttonA;
+            _prevButtonB = buttonB;
+        }
+
+        void FixedUpdate()
+        {
+            // ドームを回す（Rigidbody を通して動かすことで、雪が地面や雪だるまに正しく押される）
+            _globeBody.MoveRotation(_globeRotation);
+
+            // 雪がガラスの外に出ないようにする
+            KeepSnowInside();
+        }
+
+        void OnDisable()
+        {
+            // 重力を元に戻す（戻さないと、他のシーンでも重力が変わったままになる）
+            Physics.gravity = _originalGravity;
+        }
+
+        void OnDestroy()
+        {
+            if (_snowMaterial != null)
+            {
+                Destroy(_snowMaterial);
+            }
+        }
+
+        // ==================================================================
+        //  雪を作る
+        // ==================================================================
+
+        /// <summary>
+        /// 雪を SnowCount 個作って、ガラス玉の中にばらまく
+        /// </summary>
+        void CreateSnow()
+        {
+            if (_snowPrefab == null)
+            {
+                Debug.LogError("雪の Prefab がセットされていません");
+                return;
+            }
+
+            // 雪の親がドームの子になっていると、ドームを回したときに雪が一緒に瞬間移動してしまうので、外に出す
+            if (_snowParent != null && _snowParent.IsChildOf(transform))
+            {
+                _snowParent.SetParent(null, true);
+            }
+
+            _snowFlakes = new Rigidbody[SnowCount];
+
+            // 雪のマテリアルをコピーして、全部の雪で共有する
+            _snowMaterial = new Material(_snowPrefab.GetComponent<Renderer>().sharedMaterial);
+
+            // 雪1粒の半径（球の Prefab の大きさの半分）
+            _snowRadius = _snowPrefab.transform.localScale.x * 0.5f;
+
+            for (int i = 0; i < SnowCount; i++)
+            {
+                // ガラス玉の中の、ランダムな位置に雪を作る
+                Vector3 position = transform.position + transform.rotation * RandomPointInGlobe();
+                GameObject flake = Instantiate(_snowPrefab, position, Random.rotation, _snowParent);
+                flake.name = "Snow_" + i.ToString("000");
+                flake.GetComponent<Renderer>().sharedMaterial = _snowMaterial;
+
+                Rigidbody rb = flake.GetComponent<Rigidbody>();
+                // 空気の抵抗
+                rb.linearDamping = SnowDamping;
+                // 物理エンジンは、止まっている物体を「眠らせて」計算を省略する。
+                // 眠っていると、重力の向きが変わっても動かないので、眠らないようにする
+                rb.sleepThreshold = 0.0f;
+
+                _snowFlakes[i] = rb;
+            }
+
+            ApplySnowColor();
+        }
+
+        /// <summary>
+        /// ガラス玉の中の、地面より上のランダムな位置を返す（ドームから見た位置）
+        /// </summary>
+        Vector3 RandomPointInGlobe()
+        {
+            while (true)
+            {
+                Vector3 p = Random.insideUnitSphere * (GlobeRadius * 0.9f);
+                if (p.y > GroundHeight + 0.1f)
+                {
+                    return p;
+                }
+            }
+        }
+
+        // ==================================================================
+        //  M5Stack の値を読む
+        // ==================================================================
+
+        /// <summary>
+        /// M5Stack の加速度を、Unity の向き（X=右, Y=上, Z=奥）に合わせて返す
+        /// </summary>
+        Vector3 GetAcceleration()
+        {
+            Vector3 a = _imuInputManager.Acceleration;
+
+            // --- キーボード入力モードのとき ---
+            if (_imuInputManager.mode == IMUInputManager.InputMode.Keyboard)
+            {
+                // キーボードの値には「じっとしているときの上向き 1G」が入っていないので足す
+                // 矢印キーで、傾けたときの動きを試せる
+                return Vector3.up + new Vector3(a.x, a.z, a.y) * 1.5f;
+            }
+
+            // --- まだ値が届いていないとき（すべて 0）は、ふつうの重力にしておく ---
+            if (a.sqrMagnitude < 0.01f)
+            {
+                return Vector3.up;
+            }
+
+            // --- M5Stack の向きを、Unity の向きに並べ替える ---
+            Vector3 acc;
+            if (holdStyle == HoldStyle.Upright)
+            {
+                // 立てて持つ: M5Stack の X=右, Y=上, Z=画面から手前
+                acc = new Vector3(a.x, a.y, -a.z);
+            }
+            else
+            {
+                // 平らに持つ: M5Stack の X=右, Y=奥, Z=上（画面の向き）
+                acc = new Vector3(a.x, a.z, a.y);
+            }
+
+            // 向きの反転（雪が思った方向に動かないとき用）
+            if (InvertX) acc.x = -acc.x;
+            if (InvertY) acc.y = -acc.y;
+            if (InvertZ) acc.z = -acc.z;
+
+            return acc;
+        }
+
+        // ==================================================================
+        //  雪の動き
+        // ==================================================================
+
+        /// <summary>
+        /// 雪がガラス玉の外や、地面の下に出てしまったら、内側に戻す
+        /// （強く振ったとき、速すぎて壁をすり抜けてしまうのを防ぐ）
+        /// </summary>
+        void KeepSnowInside()
+        {
+            if (_snowFlakes == null)
+            {
+                return;
+            }
+
+            Vector3 center = transform.position;
+            // 「画面の中の向き → ドームから見た向き」に変換する回転と、その逆
+            Quaternion toGlobe = Quaternion.Inverse(_globeRotation);
+            Quaternion toWorld = _globeRotation;
+
+            // 雪の中心が行ける範囲（ガラスの半径 - 雪の半径）
+            float limit = GlobeRadius - _snowRadius;
+            // 雪の中心が行ける一番低い高さ（ドームから見た高さ。地面 + 雪の半径）
+            float lowestY = GroundHeight + _snowRadius;
+
+            foreach (Rigidbody rb in _snowFlakes)
+            {
+                // ドームから見た位置と速度に変換する
+                // （こうすると、ドームがどれだけ傾いていても、同じ計算で済む）
+                Vector3 position = toGlobe * (rb.position - center);
+                Vector3 velocity = toGlobe * rb.linearVelocity;
+                bool changed = false;
+
+                // --- ガラスの外に出ていたら、内側に戻す ---
+                if (position.magnitude > limit)
+                {
+                    Vector3 outward = position.normalized;
+                    position = outward * limit;
+                    // 外向きの速さを消す（ガラスにぶつかって止まる）
+                    float outwardSpeed = Vector3.Dot(velocity, outward);
+                    if (outwardSpeed > 0.0f)
+                    {
+                        velocity -= outward * outwardSpeed;
+                    }
+                    changed = true;
+                }
+
+                // --- 地面より下にもぐっていたら、上に戻す ---
+                if (position.y < lowestY)
+                {
+                    position.y = lowestY;
+                    if (velocity.y < 0.0f)
+                    {
+                        velocity.y = 0.0f;
+                    }
+                    changed = true;
+                }
+
+                // 画面の中の位置と速度に戻して、反映する
+                if (changed)
+                {
+                    rb.position = center + toWorld * position;
+                    rb.linearVelocity = toWorld * velocity;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 雪を舞い上げる（ボタンA）
+        /// </summary>
+        void BlowUpSnow()
+        {
+            if (_snowFlakes == null)
+            {
+                return;
+            }
+
+            // 今の重力と反対の向き（＝上）
+            Vector3 up = -Physics.gravity.normalized;
+
+            foreach (Rigidbody rb in _snowFlakes)
+            {
+                // 上向き + ばらばらの向き に、勢いをつける
+                Vector3 direction = up + Random.insideUnitSphere * 0.8f;
+                rb.AddForce(direction * BlowUpPower, ForceMode.VelocityChange);
+            }
+        }
+
+        /// <summary>
+        /// 雪の色を、次の色に変える（ボタンB）
+        /// </summary>
+        void ChangeSnowColor()
+        {
+            _colorIndex = (_colorIndex + 1) % SnowColors.Length;
+            ApplySnowColor();
+        }
+
+        /// <summary>
+        /// 今の色を、雪のマテリアルに反映する
+        /// </summary>
+        void ApplySnowColor()
+        {
+            if (_snowMaterial == null || SnowColors.Length == 0)
+            {
+                return;
+            }
+
+            Color color = SnowColors[_colorIndex];
+            _snowMaterial.color = color;
+            _snowMaterial.SetColor("_EmissionColor", color * SnowGlow);
+        }
+
+        // ==================================================================
+        //  シーンビューに、ガラス玉と地面の範囲を表示する（ゲーム画面には出ない）
+        // ==================================================================
+
+        void OnDrawGizmos()
+        {
+            Gizmos.matrix = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one);
+
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(Vector3.zero, GlobeRadius);
+
+            float groundRadius = Mathf.Sqrt(Mathf.Max(0.0f, GlobeRadius * GlobeRadius - GroundHeight * GroundHeight));
+            Gizmos.color = Color.white;
+            Gizmos.DrawWireCube(Vector3.up * GroundHeight, new Vector3(groundRadius * 2.0f, 0.0f, groundRadius * 2.0f));
+        }
+    }
+}

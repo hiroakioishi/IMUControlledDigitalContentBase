@@ -25,13 +25,13 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5797561496506719485}
+  serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_RootOrder: 3
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &2958856774947688520
 MonoBehaviour:
@@ -53,8 +53,15 @@ MonoBehaviour:
   Acceleration: {x: 0.01, y: 0, z: 1.07}
   Gyro: {x: -2.62, y: -1.34, z: -8.12}
   Ahrs: {x: -2.53, y: -1.94, z: 3.49}
+  ButtonA: 0
+  ButtonB: 0
+  ButtonC: 0
   AutoOpenSerial: 0
   SerialPortName: COM9
+  BaudRate: 115200
+  ButtonAKey: 122
+  ButtonBKey: 120
+  ButtonCKey: 99
   ShowSettingWindow: 1
   ShowSettingWindowKey: 48
 --- !u!114 &3293497575961690417
